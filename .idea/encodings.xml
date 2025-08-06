@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="Encoding">
+    <file url="file://$PROJECT_DIR$/eval_new/farmer_evaluation_results.txt" charset="GBK" />
+    <file url="file://$PROJECT_DIR$/eval_new/landlord_evaluation_results.txt" charset="GBK" />
+    <file url="file://$PROJECT_DIR$/landlord_up_evaluation_results.txt" charset="GBK" />
+  </component>
+</project>
