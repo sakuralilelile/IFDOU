@@ -52,7 +52,7 @@ class Environment:
         self.episode_return += reward
         episode_return = self.episode_return
         infoset = self.env.infoset
-        print(infoset)
+        # print(infoset)
 
         if done:
             obs = self.env.reset()
