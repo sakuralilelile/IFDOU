@@ -37,9 +37,7 @@ def learn(position,
     obs_x = torch.cat((obs_x_no_action, obs_action), dim=2).float()
     obs_x = torch.flatten(obs_x, 0, 1)
     obs_z = torch.flatten(batch['obs_z'].to(device), 0, 1).float()
-
-    # print("obs_x: ", obs_x_no_action.shape)
-    target = torch.flatten(batch['target'].to(device), 0, 1)
+    target = torch.flatten(batch['reward'].to(device), 0, 1)
     episode_returns = batch['episode_return'][batch['done']]
     mean_episode_return_buf[position].append(torch.mean(episode_returns).to(device))
         
