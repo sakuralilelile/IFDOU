@@ -36,8 +36,10 @@ log.setLevel(logging.INFO)
 # and learner processes. They are shared tensors in GPU
 Buffers = typing.Dict[str, typing.List[torch.Tensor]]
 
+
 def create_env(flags):
     return Env(flags.objective)
+
 
 def get_batch(free_queue,
               full_queue,
@@ -59,6 +61,7 @@ def get_batch(free_queue,
         free_queue.put(m)
     return batch
 
+
 def create_optimizers(flags, learner_model):
     """
     Create three optimizers for the three positions
@@ -74,6 +77,7 @@ def create_optimizers(flags, learner_model):
             alpha=flags.alpha)
         optimizers[position] = optimizer
     return optimizers
+
 
 def create_buffers(flags, device_iterator):
     """
@@ -95,6 +99,8 @@ def create_buffers(flags, device_iterator):
                 obs_x_no_action=dict(size=(T, x_dim), dtype=torch.int8),
                 obs_action=dict(size=(T, 54), dtype=torch.int8),
                 obs_z=dict(size=(T, 5, 162), dtype=torch.int8),
+                legal_actions=dict(size=(T, 7, 54), dtype=torch.int8),
+                legal_actions_mask=dict(size=(T, 7), dtype=torch.int8),
                 legal_step_num=dict(size=(T,), dtype=torch.int8),
                 reward=dict(size=(T,), dtype=torch.float32)
             )
@@ -102,12 +108,13 @@ def create_buffers(flags, device_iterator):
             for _ in range(flags.num_buffers):
                 for key in _buffers:
                     if not device == "cpu":
-                        _buffer = torch.empty(**specs[key]).to(torch.device('cuda:'+str(device))).share_memory_()
+                        _buffer = torch.empty(**specs[key]).to(torch.device('cuda:' + str(device))).share_memory_()
                     else:
                         _buffer = torch.empty(**specs[key]).to(torch.device('cpu')).share_memory_()
                     _buffers[key].append(_buffer)
             buffers[device][position] = _buffers
     return buffers
+
 
 def act(i, device, free_queue, full_queue, model, buffers, flags):
     """
@@ -129,46 +136,59 @@ def act(i, device, free_queue, full_queue, model, buffers, flags):
         obs_x_no_action_buf = {p: [] for p in positions}
         obs_action_buf = {p: [] for p in positions}
         obs_z_buf = {p: [] for p in positions}
-        legal_step_num_buf = {p: [] for p in positions}
-        reward_buf = {p: [] for p in positions}
+        legal_actions_buf = {p: [] for p in positions}
+        legal_actions_mask_buf = {p: [] for p in positions}
+        legal_step_num_buff = {p: [] for p in positions}
+        reward_buff = {p: [] for p in positions}
+
         size = {p: 0 for p in positions}
 
         position, obs, env_output = env.initial()
 
         while True:
             while True:
-                # 新增
-                myhand = env_output['obs_x_no_action'][:54].tolist()
                 obs_x_no_action_buf[position].append(env_output['obs_x_no_action'])
+                myhand = env_output['obs_x_no_action'][:54].tolist()
                 obs_z_buf[position].append(env_output['obs_z'])
+                # 获取合法动作并编码
+                legal_actions = obs['legal_actions'][:7]
+                legal_actions_vec = [_cards2tensor(action) for action in legal_actions]
+                legal_actions_buf[position].append(legal_actions_vec)
+
                 with torch.no_grad():
                     agent_output = model.forward(position, obs['z_batch'], obs['x_batch'], flags=flags)
                 _action_idx = int(agent_output['action'].cpu().detach().numpy())
                 action = obs['legal_actions'][_action_idx]
                 obs_action = _cards2tensor(action)
                 obs_action_buf[position].append(obs_action)
-                # final = 9
-                final = _card_num(myhand, obs_action)
-                legal_step_num_buf[position].append(final)
-                reward_buf[position].append(0)
+                legal_step_num_buff[position].append(_card_num(myhand, obs_action))
                 size[position] += 1
+                # mask保存
+                mask = [1 if action in legal_actions else 0 for action in range(10)]  # 创建合法动作的 mask
+                if _action_idx <= 9:
+                    mask[_action_idx] = 2
+                legal_actions_mask_buf[position].append(mask)
                 position, obs, env_output = env.step(action)
+
                 if env_output['done']:
                     for p in positions:
                         diff = size[p] - len(target_buf[p])
                         if diff > 0:
-                            done_buf[p].extend([False for _ in range(diff-1)])
+                            done_buf[p].extend([False for _ in range(diff - 1)])
                             done_buf[p].append(True)
-                            episode_return = env_output['episode_return'] if p == 'landlord' else -env_output['episode_return']
-                            episode_return_buf[p].extend([0.0 for _ in range(diff-1)])
+
+                            episode_return = env_output['episode_return'] if p == 'landlord' else -env_output[
+                                'episode_return']
+                            episode_return_buf[p].extend([0.0 for _ in range(diff - 1)])
                             episode_return_buf[p].append(episode_return)
                             target_buf[p].extend([episode_return for _ in range(diff)])
+
                     break
 
+            # 将数据保存到buffers
             l = 0.1
-            while size['landlord'] > T and size['landlord_up'] > T and size['landlord_down'] > T:
-                index = None
-                for p in positions:
+            for p in positions:
+                while size[p] > T:
                     index = free_queue[p].get()
                     if index is None:
                         break
@@ -179,23 +199,21 @@ def act(i, device, free_queue, full_queue, model, buffers, flags):
                         buffers[p]['obs_x_no_action'][index][t, ...] = obs_x_no_action_buf[p][t]
                         buffers[p]['obs_action'][index][t, ...] = obs_action_buf[p][t]
                         buffers[p]['obs_z'][index][t, ...] = obs_z_buf[p][t]
-                        buffers[p]['legal_step_num'][index][t, ...] = legal_step_num_buf[p][t]
-                        buffers[p]['reward'][index][t, ...] = reward_buf[p][t]
+                        buffers[p]['legal_actions'][index][t, ...] = legal_actions_buf[p][t]
+                        buffers[p]['legal_actions_mask'][index][t, ...] = legal_actions_mask_buf[p][t]
+                        buffers[p]['legal_step_num'][index][t, ...] = legal_step_num_buff[p][t]
                         if t == 0:
-                            adv_diff = legal_step_num_buf['landlord'][t] - min_step(legal_step_num_buf['landlord_up'][t], legal_step_num_buf['landlord_down'][t])
+                            adv_diff = legal_step_num_buff['landlord'][t] - min_step(legal_step_num_buff['landlord_up'][t], legal_step_num_buff['landlord_down'][t])
                         else:
-                            adv_diff_t = legal_step_num_buf['landlord'][t] - min_step(legal_step_num_buf['landlord_up'][t], legal_step_num_buf['landlord_down'][t])
-                            adv_diff_t_1 = legal_step_num_buf['landlord'][t-1] - min_step(legal_step_num_buf['landlord_up'][t-1], legal_step_num_buf['landlord_down'][t-1])
+                            adv_diff_t = legal_step_num_buff['landlord'][t] - min_step(legal_step_num_buff['landlord_up'][t], legal_step_num_buff['landlord_down'][t])
+                            adv_diff_t_1 = legal_step_num_buff['landlord'][t-1] - min_step(legal_step_num_buff['landlord_up'][t-1], legal_step_num_buff['landlord_down'][t-1])
                             adv_diff = adv_diff_t - adv_diff_t_1
                         if p == 'landlord':
-                            reward_buf[p][t] = -1.0 * adv_diff * l
+                            reward_buff[p][t] = -1.0 * adv_diff * l
                         else:
-                            reward_buf[p][t] = 0.5 * adv_diff * l
-                        buffers[p]['reward'][index][t, ...] = reward_buf[p][t]
+                            reward_buff[p][t] = 0.5 * adv_diff * l
+                        buffers[p]['reward'][index][t, ...] = reward_buff[p][t]
 
-                for p in positions:
-                    if index is None:
-                        break
                     full_queue[p].put(index)
                     done_buf[p] = done_buf[p][T:]
                     episode_return_buf[p] = episode_return_buf[p][T:]
@@ -203,8 +221,11 @@ def act(i, device, free_queue, full_queue, model, buffers, flags):
                     obs_x_no_action_buf[p] = obs_x_no_action_buf[p][T:]
                     obs_action_buf[p] = obs_action_buf[p][T:]
                     obs_z_buf[p] = obs_z_buf[p][T:]
-                    legal_step_num_buf[p] = legal_step_num_buf[p][T:]
-                    reward_buf[p] = reward_buf[p][T:]
+                    legal_actions_buf[p] = legal_actions_buf[p][T:]
+                    legal_actions_mask_buf[p] = legal_actions_mask_buf[p][T:]
+                    legal_step_num_buff[p] = legal_step_num_buff[p][T:]
+                    reward_buff[p] = reward_buff[p][T:]
+
                     size[p] -= T
 
     except KeyboardInterrupt:
@@ -215,6 +236,7 @@ def act(i, device, free_queue, full_queue, model, buffers, flags):
         print()
         raise e
 
+
 def _cards2tensor(list_cards):
     """
     Convert a list of integers to the tensor
@@ -224,6 +246,7 @@ def _cards2tensor(list_cards):
     matrix = _cards2array(list_cards)
     matrix = torch.from_numpy(matrix)
     return matrix
+
 
 def min_step(a,b):
     if a > b:
@@ -642,8 +665,3 @@ def _card_num(myhand, action):
             break
 
     return steps
-
-
-
-
-

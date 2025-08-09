@@ -37,10 +37,10 @@ def learn(position,
     obs_x = torch.cat((obs_x_no_action, obs_action), dim=2).float()
     obs_x = torch.flatten(obs_x, 0, 1)
     obs_z = torch.flatten(batch['obs_z'].to(device), 0, 1).float()
-    target = torch.flatten(batch['reward'].to(device), 0, 1)
+    target = torch.flatten(batch['target'].to(device), 0, 1)
     episode_returns = batch['episode_return'][batch['done']]
     mean_episode_return_buf[position].append(torch.mean(episode_returns).to(device))
-        
+
     with lock:
         learner_outputs = model(obs_z, obs_x, return_value=True)
         loss = compute_loss(learner_outputs['values'], target)
@@ -48,7 +48,7 @@ def learn(position,
             'mean_episode_return_'+position: torch.mean(torch.stack([_r for _r in mean_episode_return_buf[position]])).item(),
             'loss_'+position: loss.item(),
         }
-        
+
         optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), flags.max_grad_norm)
@@ -58,7 +58,7 @@ def learn(position,
             actor_model.get_model(position).load_state_dict(model.state_dict())
         return stats
 
-def train(flags):  
+def train(flags):
     """
     This is the main funtion for training. It will first
     initilize everything, such as buffers, optimizers, etc.
@@ -95,13 +95,13 @@ def train(flags):
 
     # Initialize buffers
     buffers = create_buffers(flags, device_iterator)
-   
+
     # Initialize queues
     actor_processes = []
     ctx = mp.get_context('spawn')
     free_queue = {}
     full_queue = {}
-        
+
     for device in device_iterator:
         _free_queue = {'landlord': ctx.SimpleQueue(), 'landlord_up': ctx.SimpleQueue(), 'landlord_down': ctx.SimpleQueue()}
         _full_queue = {'landlord': ctx.SimpleQueue(), 'landlord_up': ctx.SimpleQueue(), 'landlord_down': ctx.SimpleQueue()}
@@ -156,7 +156,7 @@ def train(flags):
         nonlocal frames, position_frames, stats
         while frames < flags.total_frames:
             batch = get_batch(free_queue[device][position], full_queue[device][position], buffers[device][position], flags, local_lock)
-            _stats = learn(position, models, learner_model.get_model(position), batch, 
+            _stats = learn(position, models, learner_model.get_model(position), batch,
                 optimizers[position], flags, position_lock)
 
             with lock:
@@ -187,7 +187,7 @@ def train(flags):
                     target=batch_and_learn, name='batch-and-learn-%d' % i, args=(i, device, position, locks[device][position], position_locks[position]))
                 thread.start()
                 threads.append(thread)
-    
+
     def checkpoint(frames):
         if flags.disable_checkpoint:
             return
@@ -218,7 +218,7 @@ def train(flags):
             start_time = timer()
             time.sleep(5)
 
-            if timer() - last_checkpoint_time > flags.save_interval * 60:  
+            if timer() - last_checkpoint_time > flags.save_interval * 60:
                 checkpoint(frames)
                 last_checkpoint_time = timer()
             end_time = timer()
@@ -243,7 +243,7 @@ def train(flags):
                      pprint.pformat(stats))
 
     except KeyboardInterrupt:
-        return 
+        return
     else:
         for thread in threads:
             thread.join()
